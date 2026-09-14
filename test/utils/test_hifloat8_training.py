@@ -227,6 +227,12 @@ def test_grouped_input_validation(monkeypatch):
 
 
 def test_grouped_capability_check_requires_split_k_schema(monkeypatch):
+    class DynamicSchema:
+        _schema = "npu_dynamic_quant(dst_type_max)"
+
+    class DynamicOp:
+        default = DynamicSchema()
+
     class Schema:
         _schema = (
             "npu_grouped_matmul(scale, per_token_scale, group_list, group_type, "
@@ -239,6 +245,7 @@ def test_grouped_capability_check_requires_split_k_schema(monkeypatch):
     monkeypatch.setattr(hif8.torch_npu, "hifloat8", torch.uint8, raising=False)
     monkeypatch.setattr(hif8.torch_npu, "npu_dynamic_quant", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr(hif8.torch_npu, "npu_grouped_matmul", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr(hif8.torch.ops.npu, "npu_dynamic_quant", DynamicOp(), raising=False)
     monkeypatch.setattr(hif8.torch.ops.npu, "npu_grouped_matmul", Op(), raising=False)
 
     assert hif8._grouped_capability_errors() == ()
@@ -246,6 +253,12 @@ def test_grouped_capability_check_requires_split_k_schema(monkeypatch):
     Schema._schema = Schema._schema.replace("weight_dtype", "")
     assert hif8._grouped_capability_errors() == (
         "npu_grouped_matmul schema argument 'weight_dtype'",
+    )
+
+    Schema._schema += " weight_dtype"
+    DynamicSchema._schema = "npu_dynamic_quant()"
+    assert hif8._grouped_capability_errors() == (
+        "npu_dynamic_quant schema argument 'dst_type_max'",
     )
 
 
@@ -256,6 +269,42 @@ def test_grouped_capability_check_can_skip_kernel_probe(monkeypatch):
     monkeypatch.setattr(hif8, "_grouped_capability_errors", lambda: ("missing symbol",))
     with pytest.raises(RuntimeError, match="missing symbol"):
         hif8.assert_hifloat8_grouped_training_available(probe_kernel=False)
+
+
+@pytest.mark.parametrize(
+    "kind, expected_max",
+    (("input", 15.0), ("weight", 15.0), ("grad", 224.0)),
+)
+def test_grouped_quantize_uses_precision_headroom(monkeypatch, kind, expected_max):
+    class FakeTensor:
+        device = torch.device("npu")
+        dtype = torch.bfloat16
+
+    calls = []
+    marker = object()
+
+    def dynamic_quant(tensor, **kwargs):
+        calls.append((tensor, kwargs))
+        return marker, torch.ones(1)
+
+    monkeypatch.setattr(hif8.torch_npu, "hifloat8", torch.uint8, raising=False)
+    monkeypatch.setattr(hif8.torch_npu, "npu_dynamic_quant", dynamic_quant, raising=False)
+
+    value = FakeTensor()
+    data, scale = hif8._grouped_quantize(value, kind)
+
+    assert data is marker
+    assert scale.shape == (1,)
+    assert calls == [
+        (
+            value,
+            {
+                "dst_type": torch.uint8,
+                "quant_mode": "pertensor",
+                "dst_type_max": expected_max,
+            },
+        )
+    ]
 
 
 class _ToyBlock(nn.Module):
