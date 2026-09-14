@@ -50,6 +50,11 @@ def _grouped_capability_errors() -> Tuple[str, ...]:
         if not callable(getattr(torch_npu, name, None)):
             errors.append(f"torch_npu.{name}")
 
+    dynamic_quant = getattr(getattr(torch.ops, "npu", None), "npu_dynamic_quant", None)
+    dynamic_schema = str(getattr(getattr(dynamic_quant, "default", None), "_schema", ""))
+    if "dst_type_max" not in dynamic_schema:
+        errors.append("npu_dynamic_quant schema argument 'dst_type_max'")
+
     grouped_matmul = getattr(getattr(torch.ops, "npu", None), "npu_grouped_matmul", None)
     schema = str(getattr(getattr(grouped_matmul, "default", None), "_schema", ""))
     for argument in (
@@ -127,6 +132,9 @@ def _grouped_quantize(tensor: torch.Tensor, kind: str) -> Tuple[torch.Tensor, to
         _ensure_bf16_or_fp16(tensor),
         dst_type=torch_npu.hifloat8,
         quant_mode="pertensor",
+        # HiFloat8 has less mantissa precision near its full 32768 range.
+        # Match the validated dense path's current-tensor headroom instead.
+        dst_type_max=_HIFLOAT8_MAX[kind],
     )
     _OP_COUNTS[f"grouped_quantize_{kind}"] += 1
     return data, scale
