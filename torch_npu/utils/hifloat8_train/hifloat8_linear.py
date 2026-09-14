@@ -446,6 +446,11 @@ def assert_hifloat8_grouped_training_available(
 class HiFloat8Linear(nn.Linear):
     """Linear module whose three training GEMMs use native HiFloat8 operands."""
 
+    # Transformers native tensor parallelism normally runs training Linear
+    # modules with DTensor operands. HiFloat8 kernels require each rank's plain
+    # local shard, which Transformers 5.16+ exposes through this opt-in contract.
+    _hf_quantized_needs_local_tp = True
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         output = _MatmulWithHiFloat8.apply(input, self.weight)
         if self.bias is not None:

@@ -299,6 +299,10 @@ def test_filtered_conversion_preserves_parameter_identity_and_keys():
     assert all(after_parameters[name] is parameter for name, parameter in before_parameters.items())
 
 
+def test_linear_declares_transformers_local_tp_contract():
+    assert hif8.HiFloat8Linear._hf_quantized_needs_local_tp is True
+
+
 def test_filtered_conversion_leaves_linear_subclasses_unchanged():
     class CustomLinear(nn.Linear):
         pass
