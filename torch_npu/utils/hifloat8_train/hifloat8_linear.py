@@ -332,7 +332,12 @@ class _GroupedMatmulWithHiFloat8(torch.autograd.Function):
             output_dtype=input_work.dtype,
         )
 
-        ctx.save_for_backward(input_data, input_scale, weight_work, group_list)
+        saved = [group_list]
+        if ctx.need_input_grad:
+            saved.append(weight_work)
+        if ctx.need_weight_grad:
+            saved.extend((input_data, input_scale))
+        ctx.save_for_backward(*saved)
         ctx.output_dtype = input_work.dtype
         _OP_COUNTS["grouped_forward"] += 1
         return output
@@ -350,7 +355,12 @@ class _GroupedMatmulWithHiFloat8(torch.autograd.Function):
             _OP_COUNTS["grouped_empty_backward"] += 1
             return grad_input, grad_weight, None
 
-        input_data, input_scale, weight, group_list = ctx.saved_tensors
+        saved = iter(ctx.saved_tensors)
+        group_list = next(saved)
+        if ctx.need_input_grad:
+            weight = next(saved)
+        if ctx.need_weight_grad:
+            input_data, input_scale = next(saved), next(saved)
         grad_input = grad_weight = None
 
         if ctx.need_input_grad or ctx.need_weight_grad:

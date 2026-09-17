@@ -171,6 +171,46 @@ def test_grouped_forward_dx_dw_support_empty_expert_and_split_k_view(monkeypatch
     ]
 
 
+@pytest.mark.parametrize("train_input, train_weight", [(True, False), (False, True), (True, True)])
+def test_grouped_retains_only_tensors_needed_by_requested_gradients(monkeypatch, train_input, train_weight):
+    # Retaining a quantized activation for frozen weights needlessly holds it
+    # until backward; retaining weights for dW-only has the symmetric problem.
+    _install_cpu_grouped_kernel(monkeypatch)
+    torch.manual_seed(42)
+    input_value = torch.randn(4, 3, requires_grad=train_input)
+    weight = torch.randn(2, 3, 5, requires_grad=train_weight)
+    group_list = torch.tensor((1, 4), dtype=torch.int64)
+    reference_input = input_value.detach().clone().requires_grad_(train_input)
+    reference_weight = weight.detach().clone().requires_grad_(train_weight)
+    expected = _reference_grouped_mm(reference_input, reference_weight, group_list)
+    upstream = torch.randn_like(expected)
+    (expected * upstream).sum().backward()
+
+    saved = []
+
+    def pack(tensor):
+        saved.append(tensor)
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+        actual = hif8.hifloat8_grouped_mm(input_value, weight, group_list)
+
+    retained_activation = any(tensor.shape == input_value.shape for tensor in saved)
+    retained_weight = any(tensor.shape == weight.shape for tensor in saved)
+    assert retained_activation == train_weight
+    assert retained_weight == train_input
+    torch.testing.assert_close(actual, expected)
+    (actual * upstream).sum().backward()
+    if train_input:
+        torch.testing.assert_close(input_value.grad, reference_input.grad)
+    else:
+        assert input_value.grad is None
+    if train_weight:
+        torch.testing.assert_close(weight.grad, reference_weight.grad)
+    else:
+        assert weight.grad is None
+
+
 def test_grouped_frozen_weight_skips_group_type_2(monkeypatch):
     calls = _install_cpu_grouped_kernel(monkeypatch)
     hif8.reset_hifloat8_op_counts()
